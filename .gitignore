@@ -1,0 +1,132 @@
+# Terraform state files
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform plan files
+*.tfplan
+*.tfplan.*
+
+# Variable files (may contain sensitive data)
+*.tfvars
+!*.tfvars.example
+*.auto.tfvars
+
+# Terraform working directories
+.terraform/
+.terraform.lock.hcl
+
+# Terraform crash logs
+crash.log
+crash.*.log
+
+# Terraform modules cache
+.terraform.d/
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# AWS credentials and config
+.aws/
+aws-credentials
+aws-config
+
+# SSH keys
+*.pem
+*.ppk
+id_rsa*
+id_ecdsa*
+id_ed25519*
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Secrets and sensitive files
+secrets/
+*.secret
+*.key
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Infracost
+.infracost/
+
+# tfsec cache
+.tfsec/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Documentation generated files
+*.md.backup
+
+# CI/CD generated files
+.github/outputs/
+artifacts/
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Python (if using any Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+
+# Node.js (if using any Node.js tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archive files
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+
+# Vagrant
+.vagrant/
+
+# Ansible
+*.retry
+
+# Certificate files
+*.crt
+*.cert
+*.ca-bundle
