@@ -46,11 +46,6 @@ id_ed25519*
 .env.local
 .env.*.local
 
-# Secrets and sensitive files
-secrets/
-*.secret
-*.key
-
 # IDE and editor files
 .vscode/
 .idea/

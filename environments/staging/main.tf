@@ -1,8 +1,8 @@
 # =============================================================================
-# AccessWeaver Development Environment - Main Configuration
+# AccessWeaver Staging Environment - Main Configuration
 # =============================================================================
-# Configuration complète pour l'environnement de développement
-# Optimisée pour les coûts (~$80-100/mois)
+# Configuration complète pour l'environnement de staging
+# Optimisée pour un équilibre performance/coûts (~$150-200/mois)
 # =============================================================================
 
 terraform {
@@ -53,8 +53,8 @@ locals {
   # Common naming convention
   name_prefix = "${var.project_name}-${var.environment}"
 
-  # AZ selection (use first 2 available)
-  azs = slice(data.aws_availability_zones.available.names, 0, 2)
+  # AZ selection (use first 3 available for staging)
+  azs = slice(data.aws_availability_zones.available.names, 0, 3)
 
   # Tags to apply to all resources
   common_tags = merge(
@@ -77,10 +77,11 @@ module "vpc" {
   vpc_cidr          = var.vpc_cidr
   availability_zones = local.azs
 
-  # Dev optimizations
+  # Staging optimizations
   enable_nat_gateway = true
-  single_nat_gateway = true  # Cost optimization for dev
-  enable_flow_logs   = false # Save costs in dev
+  single_nat_gateway = false  # Multi-AZ for better availability
+  one_nat_per_az     = true   # One NAT Gateway per AZ
+  enable_flow_logs   = true   # Enable flow logs for security
 
   default_tags = local.common_tags
 }
@@ -102,10 +103,17 @@ module "rds" {
   master_username  = var.database_username
   master_password  = var.database_password # From terraform.tfvars
 
-  # Dev specific overrides
+  # Staging specific overrides
   instance_class_override        = var.rds_instance_class
   allocated_storage_override     = var.rds_allocated_storage
-  backup_retention_period_override = 1  # Minimal backup in dev
+  backup_retention_period_override = 7  # 7 days backup in staging
+  multi_az_override              = true # Multi-AZ for high availability
+  enable_read_replica            = true # Enable read replica for staging
+  deletion_protection_override   = true # Protect against accidental deletion
+
+  # Enhanced Monitoring
+  enhanced_monitoring_interval   = 60   # 1 minute interval
+  performance_insights_enabled   = true # Enable performance insights
 
   # Monitoring
   sns_topic_arn = aws_sns_topic.alerts.arn
@@ -128,15 +136,16 @@ module "redis" {
   # Redis configuration
   auth_token = var.redis_auth_token # From terraform.tfvars
 
-  # Dev specific configuration
+  # Staging specific configuration
   node_type_override              = var.redis_node_type
-  num_cache_clusters_override     = 1  # Single node for dev
+  num_cache_clusters_override     = 2  # Primary + replica for staging
   enable_cluster_mode_override    = false
-  snapshot_retention_limit        = 1
+  snapshot_retention_limit        = 7
+  enable_read_replicas            = true # Enable read replicas for staging
 
   # Monitoring
   sns_topic_arn = aws_sns_topic.alerts.arn
-  enable_slow_log = true  # Useful for dev debugging
+  enable_slow_log = true  # Useful for performance debugging
 
   additional_tags = local.common_tags
 }
@@ -161,16 +170,17 @@ module "ecs" {
   container_registry = var.ecr_repository_url
   image_tag         = var.image_tag
 
-  # Dev optimizations
-  container_insights_enabled = false  # Save costs
-  enable_fargate_spot       = true   # 70% cost savings
-  enable_execute_command    = true   # Debugging capability
+  # Staging optimizations
+  container_insights_enabled = true   # Enable container insights for monitoring
+  enable_fargate_spot       = true    # 30% cost savings for non-critical workloads
+  fargate_spot_percentage   = 30      # 30% of tasks on Spot
+  enable_execute_command    = true    # Debugging capability
 
   # Environment variables
   common_environment_variables = {
     SPRING_PROFILES_ACTIVE = var.environment
-    LOG_LEVEL             = "DEBUG"
-    JAVA_OPTS            = "-Xmx256m -Xms128m"  # Small heap for dev
+    LOG_LEVEL             = "INFO"
+    JAVA_OPTS            = "-Xmx512m -Xms256m"  # Medium heap for staging
   }
 
   # Target groups from ALB
@@ -194,16 +204,16 @@ module "alb" {
   ecs_security_group_id = module.ecs.security_group_id
 
   # Access configuration
-  allowed_cidr_blocks = ["0.0.0.0/0"]  # Open for dev
+  allowed_cidr_blocks = var.allowed_ip_ranges  # Restricted access for staging
 
-  # SSL/Domain (optional for dev)
+  # SSL/Domain
   custom_domain     = var.custom_domain
   route53_zone_id   = var.route53_zone_id
 
-  # Dev optimizations
-  enable_waf         = false  # Save costs
-  enable_access_logs = false  # Save costs
-  deletion_protection = false  # Allow easy cleanup
+  # Staging optimizations
+  enable_waf         = true   # Enable WAF for security
+  enable_access_logs = true   # Enable access logs for auditing
+  deletion_protection = true  # Protect against accidental deletion
 
   # Monitoring
   sns_topic_arn = aws_sns_topic.alerts.arn
@@ -283,46 +293,92 @@ resource "aws_sns_topic_subscription" "alerts_email" {
   endpoint  = var.alert_email
 }
 
-# =============================================================================
-# ECR Repository (if not exists)
-# =============================================================================
-resource "aws_ecr_repository" "accessweaver" {
-  for_each = toset([
-    "aw-api-gateway",
-    "aw-pdp-service",
-    "aw-pap-service",
-    "aw-tenant-service",
-    "aw-audit-service"
-  ])
+resource "aws_sns_topic_subscription" "alerts_slack" {
+  count     = var.slack_webhook_url != null ? 1 : 0
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "https"
+  endpoint  = var.slack_webhook_url
+}
 
-  name                 = "${var.project_name}/${each.key}"
-  image_tag_mutability = "MUTABLE"
+# Enhanced CloudWatch Dashboard for staging
+resource "aws_cloudwatch_dashboard" "main" {
+  dashboard_name = "${local.name_prefix}-dashboard"
 
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  lifecycle_policy {
-    policy = jsonencode({
-      rules = [
-        {
-          rulePriority = 1
-          description  = "Keep last 5 images"
-          selection = {
-            tagStatus     = "tagged"
-            tagPrefixList = ["v"]
-            countType     = "imageCountMoreThan"
-            countNumber   = 5
-          }
-          action = {
-            type = "expire"
-          }
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", "ClusterName", module.ecs.cluster_name, "ServiceName", "${local.name_prefix}-api-gateway"],
+            ["AWS/ECS", "MemoryUtilization", "ClusterName", module.ecs.cluster_name, "ServiceName", "${local.name_prefix}-api-gateway"]
+          ]
+          period = 300
+          stat   = "Average"
+          region = var.aws_region
+          title  = "ECS Service Metrics"
         }
-      ]
-    })
-  }
-
-  tags = local.common_tags
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", module.rds.db_instance_id],
+            ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", module.rds.db_instance_id],
+            ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", module.rds.db_instance_id]
+          ]
+          period = 300
+          stat   = "Average"
+          region = var.aws_region
+          title  = "RDS Metrics"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/ElastiCache", "CPUUtilization", "CacheClusterId", module.redis.cluster_id],
+            ["AWS/ElastiCache", "NetworkBytesIn", "CacheClusterId", module.redis.cluster_id],
+            ["AWS/ElastiCache", "NetworkBytesOut", "CacheClusterId", module.redis.cluster_id]
+          ]
+          period = 300
+          stat   = "Average"
+          region = var.aws_region
+          title  = "Redis Metrics"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", "LoadBalancer", module.alb.alb_arn_suffix],
+            ["AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", "LoadBalancer", module.alb.alb_arn_suffix],
+            ["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", "LoadBalancer", module.alb.alb_arn_suffix]
+          ]
+          period = 300
+          stat   = "Sum"
+          region = var.aws_region
+          title  = "ALB Metrics"
+        }
+      }
+    ]
+  })
 }
 
 # =============================================================================
@@ -360,22 +416,14 @@ output "redis_endpoint" {
   sensitive   = true
 }
 
-output "ecr_repositories" {
-  description = "ECR repository URLs"
-  value = {
-    for k, v in aws_ecr_repository.accessweaver :
-    k => v.repository_url
-  }
-}
-
 output "estimated_monthly_cost" {
   description = "Estimated monthly AWS costs"
   value = {
-    vpc    = "$5-10 (NAT Gateway)"
-    rds    = "$15-25 (db.t3.micro)"
-    redis  = "$13-20 (cache.t3.micro)"
-    ecs    = "$30-50 (Fargate Spot)"
-    alb    = "$20-25 (Application Load Balancer)"
-    total  = "$80-130/month"
+    vpc    = "$15-25 (Multiple NAT Gateways)"
+    rds    = "$35-50 (db.t3.small Multi-AZ + Read Replica)"
+    redis  = "$30-40 (cache.t3.small + Replica)"
+    ecs    = "$40-55 (Fargate Mix + Container Insights)"
+    alb    = "$25-30 (Application Load Balancer + WAF)"
+    total  = "$150-200/month"
   }
 }

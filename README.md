@@ -49,13 +49,24 @@ Internet
 ### Prérequis
 ```bash
 # Installer les outils requis
-brew install terraform awscli jq
+brew install terraform awscli jq gh
 aws configure  # Configurer vos credentials AWS
+gh auth login  # Configurer GitHub CLI
 
 # Vérifier les versions
 terraform --version  # >= 1.6.0
 aws --version        # >= 2.0
+java -version        # >= 21 (pour les tests locaux)
 ```
+
+### Configuration des Secrets GitHub
+
+Pour que les workflows CI/CD fonctionnent correctement, vous devez configurer les secrets GitHub suivants :
+
+1. **AWS_ROLE_TO_ASSUME** : ARN du rôle IAM à assumer par GitHub Actions
+2. **SLACK_WEBHOOK_URL** : URL du webhook Slack pour les notifications
+
+Consultez le guide détaillé dans [.github/GITHUB_SECRETS_SETUP.md](.github/GITHUB_SECRETS_SETUP.md) pour les instructions complètes.
 
 ### Déploiement Rapide (Dev)
 ```bash
@@ -75,6 +86,9 @@ make deploy ENV=dev
 
 # 5. Vérifier le déploiement
 make validate ENV=dev
+
+# 6. Créer un tag de version
+make tag-version  # Entrez la version (ex: v1.0.0)
 ```
 
 ## 📁 Structure du Repository
@@ -162,19 +176,65 @@ Alertes configurées:
 
 ## 🔄 CI/CD Integration
 
-### GitHub Actions
-- **Terraform Plan** : Sur chaque PR
-- **Security Scan** : tfsec + Checkov
-- **Cost Estimation** : Infracost analysis
-- **Auto-Apply** : Sur merge vers main (staging/prod)
+### GitHub Actions Workflows
 
-### Environnements
-```yaml
-Workflow:
-  feature-branch → dev (auto-deploy)
-  dev → staging (manual approval)
-  staging → prod (manual approval + change window)
+#### Validation et Planning
+- **terraform-validate.yml** : Validation du code Terraform, linting et scan de sécurité
+- **terraform-plan.yml** : Génère un plan Terraform pour chaque environnement lors des PRs et publie le résultat dans les commentaires
+
+#### Déploiement
+- **terraform-apply.yml** : Applique automatiquement les changements à l'environnement dev après merge sur main
+- **promote-staging.yml** : Promeut une version spécifique vers l'environnement staging
+- **promote-prod.yml** : Promeut une version vers production avec gate d'approbation
+- **rollback.yml** : Rollback d'urgence vers une version antérieure stable
+
+#### Notifications
+- Intégration Slack pour chaque étape du pipeline
+- Notifications d'erreurs et alertes en cas d'échec
+- Rapports de déploiement et liens vers les dashboards
+
+### Configuration requise
+
+1. **Secrets GitHub**
+   - `AWS_ROLE_TO_ASSUME` : Rôle IAM avec permissions Terraform
+   - `SLACK_WEBHOOK_URL` : Pour les notifications
+
+2. **Environnements GitHub**
+   - `dev` : Déploiement automatique
+   - `staging` : Approbation optionnelle
+   - `prod-plan` et `prod` : Approbation obligatoire
+
+3. **Authentification AWS**
+   - Configuration OIDC entre GitHub et AWS
+   - Permissions IAM appropriées
+
+Voir [.github/GITHUB_SECRETS_SETUP.md](.github/GITHUB_SECRETS_SETUP.md) pour les instructions détaillées.
+
+### Process de Promotion Multi-Environnements
+
+```mermaid
+graph LR
+    A[Feature Branch] -->|PR + Review| B[Main Branch]
+    B -->|Auto-Deploy| C[Dev]
+    C -->|promote-staging.yml| D[Staging]
+    D -->|promote-prod.yml + Approval| E[Production]
+    E -->|rollback.yml| D
+    D -->|rollback.yml| C
 ```
+
+### Commandes Makefile pour CI/CD
+
+```bash
+# Commandes de promotion
+make tag-version                 # 🏷️ Créer un nouveau tag de version Git
+make promote-staging            # 🚀 Promouvoir une version vers staging
+make promote-prod               # 🚀 Promouvoir une version vers production
+
+# Rollback d'urgence
+make rollback                   # ⏮️ Rollback d'un environnement
+```
+
+> **Note**: Ces commandes utilisent GitHub CLI (`gh`) pour déclencher les workflows GitHub Actions. Assurez-vous d'avoir configuré `gh auth login` et d'avoir les permissions nécessaires sur le repository.
 
 ## 📚 Documentation
 

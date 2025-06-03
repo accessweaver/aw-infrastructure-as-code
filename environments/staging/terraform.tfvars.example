@@ -1,0 +1,40 @@
+# =============================================================================
+# AccessWeaver Staging Environment - Example Variables
+# =============================================================================
+# Exemple de valeurs pour terraform.tfvars
+# Copiez ce fichier vers terraform.tfvars et modifiez les valeurs selon vos besoins
+# =============================================================================
+
+# AWS Region
+aws_region = "eu-west-1"
+
+# Database Configuration
+database_password = "ChangeMe!SuperSecurePassword123"
+
+# Redis Configuration
+redis_auth_token = "ChangeMe!SuperSecureRedisAuth456"
+
+# ECR Repository
+ecr_repository_url = "123456789012.dkr.ecr.eu-west-1.amazonaws.com"
+
+# Image Tag (remplacé automatiquement par le pipeline CI/CD)
+image_tag = "v1.0.0"
+
+# Domain Configuration
+custom_domain = "staging.accessweaver.com"
+route53_zone_id = "Z0123456789ABCDEFGHIJ"
+
+# Alert Email
+alert_email = "alerts@accessweaver.com"
+
+# Slack Webhook (optionnel)
+slack_webhook_url = "https://hooks.slack.com/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX"
+
+# Access Control
+allowed_ip_ranges = [
+  "12.34.56.78/32",  # Bureau principal
+  "23.45.67.89/32"   # VPN d'entreprise
+]
+
+# Version spécifique pour le déploiement
+version = "v1.0.0"

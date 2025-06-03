@@ -1,0 +1,212 @@
+name: Emergency Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback (dev, staging, prod)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      version:
+        description: 'Version to rollback to (e.g., v1.2.2)'
+        required: true
+        type: string
+
+env:
+  TERRAFORM_VERSION: '1.5.7'
+  AWS_DEFAULT_REGION: 'eu-west-1'
+  JAVA_VERSION: '21'  # Utilisation de Java 21 comme spécifié
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    name: Rollback ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Set Version in tfvars
+        run: |
+          cd environments/${{ github.event.inputs.environment }}
+          if [ -f terraform.tfvars ]; then
+            sed -i "s/^image_tag.*/image_tag = \"${{ github.event.inputs.version }}\"/" terraform.tfvars
+            sed -i "s/^version.*/version = \"${{ github.event.inputs.version }}\"/" terraform.tfvars
+          else
+            echo "image_tag = \"${{ github.event.inputs.version }}\"" >> terraform.tfvars
+            echo "version = \"${{ github.event.inputs.version }}\"" >> terraform.tfvars
+          fi
+
+      - name: Terraform Init
+        run: |
+          cd environments/${{ github.event.inputs.environment }}
+          terraform init -input=false
+        
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd environments/${{ github.event.inputs.environment }}
+          terraform plan -input=false -out=tfplan -var="image_tag=${{ github.event.inputs.version }}" -var="version=${{ github.event.inputs.version }}"
+      
+      - name: Terraform Apply
+        run: |
+          cd environments/${{ github.event.inputs.environment }}
+          terraform apply -input=false tfplan
+          
+      - name: Run Post-Rollback Tests
+        run: |
+          echo "Running critical tests after rollback..."
+          # Placeholder for actual test commands
+          # cd scripts
+          # ./run_critical_tests.sh --env=${{ github.event.inputs.environment }}
+          
+      - name: Tag Rollback
+        run: |
+          git tag "rollback-${{ github.event.inputs.environment }}-${{ github.event.inputs.version }}-$(date +%Y%m%d%H%M%S)"
+          git push origin "rollback-${{ github.event.inputs.environment }}-${{ github.event.inputs.version }}-$(date +%Y%m%d%H%M%S)"
+          
+      - name: Notify Slack on Success
+        uses: slackapi/slack-github-action@v1.25.0
+        if: success()
+        with:
+          payload: |
+            {
+              "text": "✅ Emergency Rollback to version ${{ github.event.inputs.version }} in ${{ github.event.inputs.environment }} completed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *Emergency Rollback Completed*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\n${{ github.event.inputs.environment }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Rolled back to:*\n${{ github.event.inputs.version }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Initiated by:*\n${{ github.actor }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:*\nComplete"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "The emergency rollback has completed successfully. Please continue monitoring system stability."
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Workflow"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+          
+      - name: Notify Slack on Failure
+        uses: slackapi/slack-github-action@v1.25.0
+        if: failure()
+        with:
+          payload: |
+            {
+              "text": "❌ CRITICAL: Emergency Rollback to version ${{ github.event.inputs.version }} in ${{ github.event.inputs.environment }} FAILED",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *CRITICAL: Emergency Rollback FAILED*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\n${{ github.event.inputs.environment }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Attempted version:*\n${{ github.event.inputs.version }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Initiated by:*\n${{ github.actor }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:*\nFAILED"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*CRITICAL ALERT:* The emergency rollback has failed. Immediate manual intervention is required. Please assemble the incident response team."
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Error Details"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

@@ -1,4 +1,4 @@
-.PHONY: help setup-backend init plan apply destroy validate fmt security-scan costs outputs clean
+.PHONY: help setup-backend init plan apply destroy validate fmt security-scan costs outputs clean promote-staging promote-prod rollback tag-version
 
 # Configuration par défaut
 ENV ?= dev
@@ -168,6 +168,7 @@ check-tools: ## 🔍 Vérifier les outils requis
 	@echo -n "Terraform: "; terraform --version | head -n1 || echo "$(RED)❌ Not installed$(RESET)"
 	@echo -n "AWS CLI: "; aws --version || echo "$(RED)❌ Not installed$(RESET)"
 	@echo -n "jq: "; jq --version || echo "$(RED)❌ Not installed$(RESET)"
+	@echo -n "GitHub CLI: "; gh --version || echo "$(RED)❌ Not installed (required for promotions)$(RESET)"
 	@echo -n "tfsec: "; tfsec --version || echo "$(YELLOW)⚠️  Not installed (optional)$(RESET)"
 	@echo -n "terraform-docs: "; terraform-docs --version || echo "$(YELLOW)⚠️  Not installed (optional)$(RESET)"
 	@echo -n "infracost: "; infracost --version || echo "$(YELLOW)⚠️  Not installed (optional)$(RESET)"
@@ -181,6 +182,78 @@ staging: deploy ## 🎭 Déployer l'environnement staging
 
 prod: ENV=prod
 prod: deploy ## 🚀 Déployer l'environnement prod
+
+# Commandes de promotion et rollback
+promote-staging: ## 🚀 Promouvoir une version vers staging
+	@echo "$(CYAN)🚀 Promoting version to staging$(RESET)"
+	@read -p "Enter version tag to promote (e.g., v1.2.3): " version; \
+	if [ -n "$$version" ]; then \
+		echo "$(YELLOW)Triggering GitHub workflow to promote $$version to staging...$(RESET)"; \
+		if command -v gh >/dev/null 2>&1; then \
+			gh workflow run promote-staging.yml -f version=$$version; \
+		else \
+			echo "$(RED)❌ GitHub CLI not installed. Please install it or trigger the workflow manually.$(RESET)"; \
+		fi; \
+	else \
+		echo "$(RED)❌ Version tag is required$(RESET)"; \
+	fi
+
+promote-prod: ## 🚀 Promouvoir une version vers production
+	@echo "$(CYAN)🚀 Promoting version to production$(RESET)"
+	@read -p "Enter version tag to promote (e.g., v1.2.3): " version; \
+	if [ -n "$$version" ]; then \
+		echo "$(YELLOW)⚠️  This will trigger deployment to PRODUCTION environment$(RESET)"; \
+		read -p "Are you sure you want to continue? (yes/no): " confirm; \
+		if [ "$$confirm" = "yes" ]; then \
+			echo "$(YELLOW)Triggering GitHub workflow to promote $$version to production...$(RESET)"; \
+			if command -v gh >/dev/null 2>&1; then \
+				gh workflow run promote-prod.yml -f version=$$version -f approve=true; \
+			else \
+				echo "$(RED)❌ GitHub CLI not installed. Please install it or trigger the workflow manually.$(RESET)"; \
+			fi; \
+		else \
+			echo "$(YELLOW)⏹️  Operation cancelled$(RESET)"; \
+		fi; \
+	else \
+		echo "$(RED)❌ Version tag is required$(RESET)"; \
+	fi
+
+rollback: ## ⏮️ Rollback d'urgence
+	@echo "$(RED)⏮️  EMERGENCY ROLLBACK$(RESET)"
+	@echo "$(YELLOW)⚠️  This will rollback an environment to a previous version$(RESET)"
+	@read -p "Enter environment to rollback (dev/staging/prod): " env; \
+	read -p "Enter version tag to rollback to (e.g., v1.2.2): " version; \
+	if [ -n "$$env" ] && [ -n "$$version" ]; then \
+		if [ "$$env" = "prod" ]; then \
+			echo "$(RED)⚠️  WARNING: You are about to rollback the PRODUCTION environment!$(RESET)"; \
+			read -p "Type 'CONFIRM ROLLBACK' to proceed: " confirm; \
+			if [ "$$confirm" != "CONFIRM ROLLBACK" ]; then \
+				echo "$(YELLOW)⏹️  Rollback cancelled$(RESET)"; \
+				exit 1; \
+			fi; \
+		fi; \
+		echo "$(YELLOW)Triggering GitHub workflow for rollback...$(RESET)"; \
+		if command -v gh >/dev/null 2>&1; then \
+			gh workflow run rollback.yml -f environment=$$env -f version=$$version; \
+		else \
+			echo "$(RED)❌ GitHub CLI not installed. Please install it or trigger the workflow manually.$(RESET)"; \
+		fi; \
+	else \
+		echo "$(RED)❌ Both environment and version tag are required$(RESET)"; \
+	fi
+
+# Commande pour créer un nouveau tag de version
+tag-version: ## 🏷️ Créer un nouveau tag de version
+	@echo "$(CYAN)🏷️ Creating new version tag$(RESET)"
+	@read -p "Enter new version (e.g., v1.2.3): " version; \
+	if [ -n "$$version" ]; then \
+		echo "$(YELLOW)Creating git tag $$version...$(RESET)"; \
+		git tag -a $$version -m "Release $$version"; \
+		git push origin $$version; \
+		echo "$(GREEN)✅ Tag $$version created and pushed$(RESET)"; \
+	else \
+		echo "$(RED)❌ Version is required$(RESET)"; \
+	fi
 
 # Targets spéciaux
 .DEFAULT_GOAL := help

@@ -1,0 +1,150 @@
+name: Terraform Validation
+
+on:
+  pull_request:
+    paths:
+      - '**.tf'
+      - '**.tfvars.example'
+      - 'modules/**'
+      - 'environments/**'
+  push:
+    branches:
+      - main
+      - develop
+
+env:
+  TERRAFORM_VERSION: '1.5.7'
+  AWS_DEFAULT_REGION: 'eu-west-1'
+
+jobs:
+  validate:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive .
+
+      - name: Initialize Terraform
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform init -backend=false
+
+      - name: Validate Terraform
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform validate
+
+      - name: Run TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: Init TFLint
+        run: tflint --init
+
+      - name: Run TFLint
+        run: tflint --recursive
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: true
+          output_format: sarif
+          output_file_path: reports/checkov.sarif
+
+      - name: Upload Checkov results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/checkov.sarif
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          soft_fail: true
+          format: sarif
+          out: tfsec.sarif
+
+      - name: Upload tfsec results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: tfsec.sarif
+
+  cost-estimation:
+    name: Cost Estimation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Infracost
+        uses: infracost/setup-infracost-action@v2
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+      - name: Generate Cost Estimate
+        run: |
+          infracost breakdown --path=environments/dev --format=json --out-file=/tmp/infracost-dev.json
+          infracost breakdown --path=environments/staging --format=json --out-file=/tmp/infracost-staging.json
+          infracost breakdown --path=environments/prod --format=json --out-file=/tmp/infracost-prod.json
+          
+          infracost output --path="/tmp/infracost-*.json" --format=diff --out-file=/tmp/infracost-diff.txt
+
+      - name: Post Cost Comment
+        uses: infracost/infracost-gh-action@v1
+        with:
+          path: /tmp/infracost-diff.txt
+          behavior: update
+
+  documentation:
+    name: Generate Documentation
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform Docs
+        run: |
+          curl -Lo ./terraform-docs.tar.gz https://github.com/terraform-docs/terraform-docs/releases/download/v0.16.0/terraform-docs-v0.16.0-linux-amd64.tar.gz
+          tar -xzf terraform-docs.tar.gz
+          chmod +x terraform-docs
+
+      - name: Generate Module Documentation
+        run: |
+          for module in modules/*/; do
+            echo "Generating docs for $module"
+            ./terraform-docs markdown table --output-file README.md --output-mode inject $module
+          done
+
+      - name: Commit Documentation
+        uses: EndBug/add-and-commit@v9
+        with:
+          message: 'docs: auto-generate terraform documentation'
+          add: 'modules/*/README.md'

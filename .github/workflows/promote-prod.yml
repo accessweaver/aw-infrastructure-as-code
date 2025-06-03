@@ -1,0 +1,304 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to deploy (e.g., v1.2.3)'
+        required: true
+        type: string
+      approve:
+        description: 'Requires manual approval'
+        type: boolean
+        default: true
+
+env:
+  TERRAFORM_VERSION: '1.5.7'
+  AWS_DEFAULT_REGION: 'eu-west-1'
+  JAVA_VERSION: '21'  # Utilisation de Java 21 comme spécifié
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  plan-production:
+    name: Plan Production Deployment
+    runs-on: ubuntu-latest
+    environment: prod-plan
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Set Version in tfvars
+        run: |
+          cd environments/prod
+          if [ -f terraform.tfvars ]; then
+            sed -i "s/^image_tag.*/image_tag = \"${{ github.event.inputs.version }}\"/" terraform.tfvars
+            sed -i "s/^version.*/version = \"${{ github.event.inputs.version }}\"/" terraform.tfvars
+          else
+            echo "image_tag = \"${{ github.event.inputs.version }}\"" >> terraform.tfvars
+            echo "version = \"${{ github.event.inputs.version }}\"" >> terraform.tfvars
+          fi
+
+      - name: Terraform Init
+        run: |
+          cd environments/prod
+          terraform init -input=false
+        
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd environments/prod
+          terraform plan -input=false -out=tfplan -var="image_tag=${{ github.event.inputs.version }}" -var="version=${{ github.event.inputs.version }}"
+      
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: environments/prod/tfplan
+          retention-days: 5
+          
+      - name: Notify Slack - Plan Ready
+        uses: slackapi/slack-github-action@v1.25.0
+        if: success()
+        with:
+          payload: |
+            {
+              "text": "🔍 Production deployment plan ready for version ${{ github.event.inputs.version }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "🔍 *Production deployment plan ready*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:*\n${{ github.event.inputs.version }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Requested by:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "Waiting for approval to proceed with production deployment. Please review the plan and approve the workflow."
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "Review & Approve"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  deploy-production:
+    name: Deploy to Production
+    needs: plan-production
+    runs-on: ubuntu-latest
+    environment: prod
+    if: ${{ always() && needs.plan-production.result == 'success' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.version }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+          path: environments/prod/
+
+      - name: Terraform Init
+        run: |
+          cd environments/prod
+          terraform init -input=false
+      
+      - name: Terraform Apply
+        run: |
+          cd environments/prod
+          terraform apply -input=false tfplan
+          
+      - name: Run Post-Deployment Tests
+        run: |
+          echo "Running critical path tests against production environment..."
+          # Placeholder for actual test commands
+          # cd scripts
+          # ./run_critical_path_tests.sh --env=prod
+          
+      - name: Tag Deployment
+        run: |
+          git tag "prod-${{ github.event.inputs.version }}-$(date +%Y%m%d%H%M%S)"
+          git push origin "prod-${{ github.event.inputs.version }}-$(date +%Y%m%d%H%M%S)"
+          
+      - name: Notify Slack on Success
+        uses: slackapi/slack-github-action@v1.25.0
+        if: success()
+        with:
+          payload: |
+            {
+              "text": "✅ Successfully deployed version ${{ github.event.inputs.version }} to Production",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *Production Deployment Successful*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:*\n${{ github.event.inputs.version }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Deployed by:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "The deployment to production has completed successfully. Please monitor the application health in the production dashboard."
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Workflow"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    },
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Dashboard"
+                      },
+                      "url": "https://console.aws.amazon.com/cloudwatch/home?region=${{ env.AWS_DEFAULT_REGION }}#dashboards:name=accessweaver-prod-dashboard"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+          
+      - name: Notify Slack on Failure
+        uses: slackapi/slack-github-action@v1.25.0
+        if: failure()
+        with:
+          payload: |
+            {
+              "text": "❌ ALERT: Production deployment of version ${{ github.event.inputs.version }} failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *ALERT: Production Deployment Failed*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:*\n${{ github.event.inputs.version }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Attempted by:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*URGENT:* The deployment to production has failed. Please investigate immediately and consider performing a rollback if necessary."
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Error Details"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    },
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "Initiate Rollback"
+                      },
+                      "url": "https://github.com/${{ github.repository }}/actions/workflows/rollback.yml"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

@@ -1,0 +1,40 @@
+# AccessWeaver - Variables d'environnement DEV
+# Copiez ce fichier vers terraform.tfvars et modifiez les valeurs selon vos besoins
+
+# Informations générales
+environment         = "dev"
+region              = "eu-west-1"
+project_name        = "accessweaver"
+version             = "v1.0.0"
+
+# Informations de base de données
+db_username         = "accessweaver_admin"
+db_password         = "CHANGEZ_MOI_IMMEDIATEMENT"  # À remplacer par un mot de passe sécurisé
+db_instance_class   = "db.t3.small"
+
+# Informations Redis
+redis_node_type     = "cache.t3.small"
+redis_password      = "CHANGEZ_MOI_IMMEDIATEMENT"  # À remplacer par un mot de passe sécurisé
+
+# Configuration des conteneurs
+image_tag           = "latest"
+backend_repo_url    = "https://github.com/accessweaver/aw-backend.git"
+frontend_repo_url   = "https://github.com/accessweaver/aw-frontend.git"
+
+# Configuration du domaine
+domain_name         = "dev.accessweaver.com"
+certificate_arn     = "arn:aws:acm:eu-west-1:123456789012:certificate/abcdef12-3456-7890-abcd-ef1234567890"
+
+# Configuration des alertes
+alert_email         = "dev-alerts@accessweaver.com"
+alert_threshold_cpu = 80
+alert_threshold_mem = 80
+
+# Contrôle d'accès
+allowed_ips         = ["0.0.0.0/0"]  # Pour dev uniquement, restreindre en production
+
+# Secrets
+jwt_secret          = "CHANGEZ_MOI_IMMEDIATEMENT"  # À remplacer par une clé secrète sécurisée
+
+# Java 21 - Configuration JVM
+java_opts           = "-Xms512m -Xmx1024m -XX:+UseG1GC -XX:+UseStringDeduplication -Djava.security.egd=file:/dev/./urandom"

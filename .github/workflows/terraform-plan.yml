@@ -1,0 +1,101 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - '**.tf'
+      - '**.tfvars.example'
+      - 'modules/**'
+      - 'environments/**'
+      - '.github/workflows/terraform-*.yml'
+
+env:
+  TERRAFORM_VERSION: '1.5.7'
+  AWS_DEFAULT_REGION: 'eu-west-1'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init
+        id: init
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform init -input=false
+        
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform plan -input=false -no-color -out=tfplan
+        continue-on-error: true
+
+      - name: Terraform Show
+        id: show
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform show -no-color tfplan > tfplan.txt
+        
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: environments/${{ matrix.environment }}/tfplan
+          retention-days: 5
+
+      - name: Post Plan to PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: "${{ steps.show.outputs.stdout }}"
+          ENVIRONMENT: ${{ matrix.environment }}
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync(`environments/${process.env.ENVIRONMENT}/tfplan.txt`, 'utf8');
+            const truncatedPlan = plan.length > 65000 
+              ? plan.substring(0, 65000) + "\n\n... Plan output truncated ...\n" 
+              : plan;
+            
+            const output = `## Terraform Plan for ${process.env.ENVIRONMENT} environment
+            
+            <details><summary>Show Plan</summary>
+            
+            \`\`\`terraform
+            ${truncatedPlan}
+            \`\`\`
+            
+            </details>
+            
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+              
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
